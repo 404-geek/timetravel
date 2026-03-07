@@ -1,5 +1,7 @@
 package entity
 
+import "time"
+
 type Record struct {
 	ID   int               `json:"id"`
 	Data map[string]string `json:"data"`
@@ -17,4 +19,12 @@ func (d *Record) Copy() Record {
 		ID:   d.ID,
 		Data: newMap,
 	}
+}
+
+// VersionedRecord represents a record at a specific point in time.
+type VersionedRecord struct {
+	ID        int               `json:"id"`
+	Version   int               `json:"version"`
+	Data      map[string]string `json:"data"`
+	CreatedAt time.Time         `json:"created_at"`
 }
