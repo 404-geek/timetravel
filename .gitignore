@@ -2,3 +2,9 @@
 *.db
 *.db-shm
 *.db-wal
+
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
