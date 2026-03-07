@@ -1,2 +1,8 @@
 # SQLite database (local data)
 db/data/*.db
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
