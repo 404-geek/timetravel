@@ -21,15 +21,25 @@ func logError(err error) {
 func main() {
 	router := mux.NewRouter()
 
-	service := service.NewInMemoryRecordService()
-	api := api.NewAPI(&service)
+	svc, err := service.NewSQLiteRecordService("records.db")
+	if err != nil {
+		log.Fatalf("failed to create record service: %v", err)
+	}
+	defer svc.Close()
 
-	apiRoute := router.PathPrefix("/api/v1").Subrouter()
-	apiRoute.Path("/health").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// V1 API — behaviour unchanged for backward compatibility.
+	v1API := api.NewAPI(svc)
+	v1Route := router.PathPrefix("/api/v1").Subrouter()
+	v1Route.Path("/health").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		err := json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 		logError(err)
 	})
-	api.CreateRoutes(apiRoute)
+	v1API.CreateRoutes(v1Route)
+
+	// V2 API — time-travel versioning.
+	v2API := api.NewV2API(svc)
+	v2Route := router.PathPrefix("/api/v2").Subrouter()
+	v2API.CreateRoutes(v2Route)
 
 	address := "127.0.0.1:8000"
 	srv := &http.Server{

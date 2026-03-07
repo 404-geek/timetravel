@@ -10,6 +10,7 @@ import (
 var ErrRecordDoesNotExist = errors.New("record with that id does not exist")
 var ErrRecordIDInvalid = errors.New("record id must >= 0")
 var ErrRecordAlreadyExists = errors.New("record already exists")
+var ErrRecordVersionDoesNotExist = errors.New("record version does not exist")
 
 // Implements method to get, create, and update record data.
 type RecordService interface {
@@ -27,6 +28,18 @@ type RecordService interface {
 	//
 	// UpdateRecord will error if id <= 0 or the record does not exist with that id.
 	UpdateRecord(ctx context.Context, id int, updates map[string]*string) (entity.Record, error)
+}
+
+// VersionedRecordService extends RecordService with time-travel versioning capabilities.
+type VersionedRecordService interface {
+	RecordService
+
+	// GetVersionedRecord retrieves a record at a specific version.
+	// If version <= 0, it returns the latest version.
+	GetVersionedRecord(ctx context.Context, id int, version int) (entity.VersionedRecord, error)
+
+	// ListRecordVersions returns all versions of a record in ascending order.
+	ListRecordVersions(ctx context.Context, id int) ([]entity.VersionedRecord, error)
 }
 
 // InMemoryRecordService is an in-memory implementation of RecordService.
