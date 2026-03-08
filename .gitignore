@@ -1,5 +1,6 @@
 # SQLite database (local data)
 db/data/*.db
+python/db/*.db
 
 # Python
 __pycache__/
