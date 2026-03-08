@@ -4,12 +4,18 @@ Delta + keyframe storage: optional module.
 - Delta row: only `delta` (changed keys) stored; value null = delete key.
 Read path: replay from latest keyframe + apply deltas.
 Write path: compute delta; store keyframe every N versions or when delta is large.
-Existing record.py stays the default; use POST /api/v2/records/{id}/delta to write with deltas.
+
+Optimizations for large JSON/text:
+- _compute_delta: two passes over keys only (no set union); identity check before equality.
+- get_record_at_version_replay: two queries; keyframe row has full data, delta rows load_only(version, delta, created_at) so we never load full data for non-keyframe rows.
+- create_or_update_versioned_delta: full_json = json.dumps(new_state) only when storing a keyframe (ver 1, ver%10, or delta size threshold); delta-only rows skip full serialization.
+
+Use POST /api/v2/records/{id}/delta to write with deltas.
 """
 import json
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from db.models import Record as RecordRow, RecordVersion as RecordVersionRow
 from schemas.record import Record
@@ -18,7 +24,7 @@ from services.record import (
     RecordError,
     create_record,
     get_record,
-    update_record,
+    replace_record,
     _next_version,
 )
 
@@ -36,53 +42,71 @@ def _apply_delta(state: dict[str, Any], delta: dict[str, Any]) -> None:
 
 
 def _compute_delta(old_state: dict[str, Any], new_state: dict[str, Any]) -> dict[str, Any]:
-    """Only keys that changed. new_state[key]=None in delta means delete."""
+    """
+    Only keys that changed. new_state[key]=None in delta means delete.
+    Optimized for large dicts: no full set union; two passes over keys only.
+    """
     delta = {}
-    for k in set(old_state) | set(new_state):
-        old_v = old_state.get(k)
-        new_v = new_state.get(k)
-        if new_v != old_v:
-            delta[k] = new_v
+    for k in old_state:
+        if k not in new_state:
+            delta[k] = None
+        elif old_state[k] is not new_state[k] and old_state[k] != new_state[k]:
+            delta[k] = new_state[k]
+    for k in new_state:
+        if k not in old_state:
+            delta[k] = new_state[k]
     return delta
 
 
 def get_record_at_version_replay(db: Session, id: int, version: int) -> tuple[Record, str]:
     """
     Get record at version by replaying: find latest keyframe <= version, then apply deltas.
-    Use when row.data is None (delta-only row).
+    Optimized for large history: one query for keyframe (full data), one for delta rows only
+    (version, delta, created_at) so we never load full data for non-keyframe rows.
     """
-    rows = (
+    keyframe_row = (
         db.query(RecordVersionRow)
         .filter(
             RecordVersionRow.record_id == id,
             RecordVersionRow.version >= 1,
             RecordVersionRow.version <= version,
+            RecordVersionRow.is_keyframe.is_(True),
+            RecordVersionRow.data.isnot(None),
+        )
+        .order_by(RecordVersionRow.version.desc())
+        .first()
+    )
+    if keyframe_row is None:
+        raise RecordError("record or version not found", code="not_found")
+
+    state = json.loads(keyframe_row.data)
+    if keyframe_row.version == version:
+        created_at = keyframe_row.created_at.isoformat() if keyframe_row.created_at else ""
+        return Record(id=id, data=state), created_at
+
+    delta_rows = (
+        db.query(RecordVersionRow)
+        .options(
+            load_only(
+                RecordVersionRow.version,
+                RecordVersionRow.delta,
+                RecordVersionRow.created_at,
+            )
+        )
+        .filter(
+            RecordVersionRow.record_id == id,
+            RecordVersionRow.version > keyframe_row.version,
+            RecordVersionRow.version <= version,
         )
         .order_by(RecordVersionRow.version)
         .all()
     )
-    if not rows:
-        raise RecordError("record or version not found", code="not_found")
-
-    keyframe_row = None
-    for r in reversed(rows):
-        if getattr(r, "is_keyframe", True) and r.data is not None:
-            keyframe_row = r
-            break
-    if keyframe_row is None:
-        raise RecordError("no keyframe found for replay", code="not_found")
-
-    state = json.loads(keyframe_row.data)
-    for r in rows:
-        if r.version <= keyframe_row.version:
-            continue
-        if r.version > version:
-            break
+    for r in delta_rows:
         delta_json = getattr(r, "delta", None)
         if delta_json:
             _apply_delta(state, json.loads(delta_json))
 
-    last_row = next((r for r in reversed(rows) if r.version <= version), rows[-1])
+    last_row = delta_rows[-1] if delta_rows else keyframe_row
     created_at = last_row.created_at.isoformat() if last_row.created_at else ""
     return Record(id=id, data=state), created_at
 
@@ -100,30 +124,28 @@ def create_or_update_versioned_delta(db: Session, id: int, body: dict[str, Any])
             raise
         old_state = {}
 
-    new_state = dict(old_state)
-    for key, value in body.items():
-        if value is None:
-            new_state.pop(key, None)
-        else:
-            new_state[key] = value
+    # Body = full new document (replace). Omitted keys are removed; delta will record deletions.
+    new_state = dict(body)
 
     if not old_state:
         create_record(db, id, new_state)
     else:
-        update_record(db, id, body)
+        replace_record(db, id, new_state)
 
     next_ver = _next_version(db, id)
     row = db.query(RecordRow).filter(RecordRow.id == id).first()
 
-    full_json = json.dumps(new_state)
     delta = _compute_delta(old_state, new_state)
     delta_json = json.dumps(delta) if delta else "{}"
 
-    is_keyframe = (
-        next_ver == 1
-        or (next_ver % KEYFRAME_INTERVAL == 0)
-        or (len(delta_json) >= DELTA_SIZE_RATIO_THRESHOLD * len(full_json))
-    )
+    is_keyframe = next_ver == 1 or (next_ver % KEYFRAME_INTERVAL == 0)
+    full_json = None
+    if not is_keyframe:
+        full_json = json.dumps(new_state)
+        if len(delta_json) >= DELTA_SIZE_RATIO_THRESHOLD * len(full_json):
+            is_keyframe = True
+    if is_keyframe and full_json is None:
+        full_json = json.dumps(new_state)
 
     # Always store delta so "what changed" is available for every version (keyframe or not)
     if is_keyframe:

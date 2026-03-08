@@ -19,7 +19,11 @@
     .seekWrap { margin-bottom: 16px; display: none; }
     .seekWrap.visible { display: block; }
     .seekWrap label { display: block; font-size: 0.85rem; color: #999; margin-bottom: 6px; }
-    input[type="range"] { width: 100%; height: 8px; accent-color: #0a7ea4; }
+    .seekTrack { position: relative; padding: 4px 0; }
+    .seekMarkers { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 12px; pointer-events: none; z-index: 0; }
+    .seekMarkers .marker { position: absolute; width: 2px; height: 10px; background: #555; border-radius: 1px; top: 50%; transform: translate(-50%, -50%); }
+    .seekMarkers .marker.keyframe { background: #0a7ea4; height: 14px; }
+    input[type="range"] { position: relative; z-index: 1; width: 100%; height: 8px; accent-color: #0a7ea4; display: block; }
     .seekMeta { font-size: 0.8rem; color: #888; margin-top: 4px; }
     .stats { font-size: 0.8rem; color: #6a9; margin-bottom: 12px; }
     .stats span { margin-right: 16px; }
@@ -33,6 +37,15 @@
     .vrow.selected .at { color: #ccc; }
     .payload { background: #252525; border-radius: 8px; padding: 12px; margin-top: 12px; white-space: pre-wrap; word-break: break-all; font-size: 0.9rem; font-family: ui-monospace, monospace; }
     .payload.empty { color: #666; font-style: italic; }
+    .diffSection { margin-top: 16px; }
+    .diffSection h3 { font-size: 0.95rem; margin-bottom: 8px; color: #ccc; }
+    .diffPanels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 600px) { .diffPanels { grid-template-columns: 1fr; } }
+    .diffPanel { background: #252525; border-radius: 8px; padding: 12px; white-space: pre-wrap; word-break: break-all; font-size: 0.85rem; font-family: ui-monospace, monospace; min-height: 120px; max-height: 320px; overflow: auto; }
+    .diffPanel .deleted { text-decoration: line-through; color: #c66; background: rgba(200,80,80,0.12); }
+    .diffPanel .added { color: #2d8; background: rgba(45,180,80,0.15); }
+    .panelLabel { font-size: 0.75rem; color: #888; margin-bottom: 6px; }
+    .diffPanel .empty { color: #666; font-style: italic; }
     .error { color: #f44336; font-size: 0.9rem; margin-top: 8px; }
   </style>
 </head>
@@ -53,7 +66,10 @@
 
   <div class="seekWrap" id="seekWrap">
     <label for="seek">Seek by version</label>
-    <input type="range" id="seek" min="0" max="0" value="0" step="1">
+    <div class="seekTrack">
+      <div class="seekMarkers" id="seekMarkers" aria-hidden="true"></div>
+      <input type="range" id="seek" min="0" max="0" value="0" step="1">
+    </div>
     <div class="seekMeta" id="seekMeta">v1 — —</div>
   </div>
 
@@ -66,6 +82,21 @@
   </div>
   <div class="payload empty" id="payload">No version selected.</div>
 
+  <div class="diffSection" id="diffSection" style="display: none;">
+    <h3>Compare with previous (Google Docs style)</h3>
+    <div class="diffPanels">
+      <div class="diffPanelWrap">
+        <div class="panelLabel" id="originalLabel">Original (previous)</div>
+        <div class="diffPanel" id="originalPanel"></div>
+      </div>
+      <div class="diffPanelWrap">
+        <div class="panelLabel" id="selectedLabel">Selected version</div>
+        <div class="diffPanel" id="selectedPanel"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/diff/5.2.0/diff.min.js"></script>
   <script>
     const API = '';
 
@@ -87,6 +118,86 @@
     const seekWrap = document.getElementById('seekWrap');
     const seekSlider = document.getElementById('seek');
     const seekMeta = document.getElementById('seekMeta');
+    const seekMarkersEl = document.getElementById('seekMarkers');
+    const diffSection = document.getElementById('diffSection');
+    const originalLabel = document.getElementById('originalLabel');
+    const selectedLabel = document.getElementById('selectedLabel');
+    const originalPanel = document.getElementById('originalPanel');
+    const selectedPanel = document.getElementById('selectedPanel');
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function renderDiff(originalStr, selectedStr, originalVer, selectedVer) {
+      const changes = window.Diff && typeof Diff.diffLines === 'function'
+        ? Diff.diffLines(originalStr, selectedStr)
+        : simpleLineDiff(originalStr, selectedStr);
+      let leftHtml = '';
+      let rightHtml = '';
+      for (const part of changes) {
+        const escaped = escapeHtml(part.value);
+        const withNewlines = escaped.replace(/\n/g, '<br>\n');
+        if (part.removed) {
+          leftHtml += '<span class="deleted">' + withNewlines + '</span>';
+        } else if (part.added) {
+          rightHtml += '<span class="added">' + withNewlines + '</span>';
+        } else {
+          leftHtml += withNewlines;
+          rightHtml += withNewlines;
+        }
+      }
+      originalLabel.textContent = 'Original (v' + originalVer + ')';
+      selectedLabel.textContent = 'Selected (v' + selectedVer + ') — green = added';
+      originalPanel.innerHTML = leftHtml || '<span class="empty">(no previous version)</span>';
+      selectedPanel.innerHTML = rightHtml;
+      diffSection.style.display = 'block';
+    }
+
+    function simpleLineDiff(oldStr, newStr) {
+      const oldLines = (oldStr || '').split('\n');
+      const newLines = (newStr || '').split('\n');
+      const result = [];
+      let i = 0, j = 0;
+      while (i < oldLines.length && j < newLines.length) {
+        if (oldLines[i] === newLines[j]) {
+          result.push({ value: oldLines[i] + '\n', added: false, removed: false });
+          i++;
+          j++;
+        } else {
+          const nextInNew = newLines.indexOf(oldLines[i], j);
+          const nextInOld = oldLines.indexOf(newLines[j], i);
+          if (nextInNew !== -1 && (nextInOld === -1 || nextInNew - j <= nextInOld - i)) {
+            while (j < nextInNew) {
+              result.push({ value: newLines[j] + '\n', added: true, removed: false });
+              j++;
+            }
+          } else if (nextInOld !== -1) {
+            while (i < nextInOld) {
+              result.push({ value: oldLines[i] + '\n', added: false, removed: true });
+              i++;
+            }
+          } else {
+            result.push({ value: oldLines[i] + '\n', added: false, removed: true });
+            result.push({ value: newLines[j] + '\n', added: true, removed: false });
+            i++;
+            j++;
+          }
+        }
+      }
+      while (i < oldLines.length) {
+        result.push({ value: oldLines[i] + (i === oldLines.length - 1 ? '' : '\n'), added: false, removed: true });
+        i++;
+      }
+      while (j < newLines.length) {
+        result.push({ value: newLines[j] + (j === newLines.length - 1 ? '' : '\n'), added: true, removed: false });
+        j++;
+      }
+      return result;
+    }
 
     function showErr(msg) {
       errEl.textContent = msg || '';
@@ -95,6 +206,20 @@
 
     function updateStats() {
       statsEl.textContent = `API calls: ${apiCalls} · Cache hits: ${cacheHits}`;
+    }
+
+    function renderSeekMarkers() {
+      seekMarkersEl.innerHTML = '';
+      if (timeline.length === 0) return;
+      const n = timeline.length;
+      timeline.forEach((v, i) => {
+        const left = n === 1 ? 50 : (i / (n - 1)) * 100;
+        const m = document.createElement('span');
+        m.className = 'marker' + (v.is_keyframe ? ' keyframe' : '');
+        m.style.left = left + '%';
+        m.title = `v${v.version}${v.created_at ? ' — ' + v.created_at : ''}`;
+        seekMarkersEl.appendChild(m);
+      });
     }
 
     function renderTimeline() {
@@ -136,6 +261,7 @@
         timeline = j.versions || [];
         dataCache = {};
         selectedVersion = null;
+        diffSection.style.display = 'none';
         seekLabel.textContent = ' — select a version above or use slider';
         payloadEl.textContent = 'No version selected.';
         payloadEl.classList.add('empty');
@@ -146,6 +272,7 @@
         if (timeline.length > 0) {
           seekMeta.textContent = `v${timeline[0].version} — ${timeline[0].created_at}`;
         }
+        renderSeekMarkers();
         renderTimeline();
         btnPrefetch.disabled = timeline.length === 0;
       } catch (e) {
@@ -170,25 +297,50 @@
       if (!currentId || !timeline.length) return;
       selectedVersion = version;
       renderTimeline();
+      const prevVersion = timeline.findIndex(v => v.version === version) > 0
+        ? timeline[timeline.findIndex(v => v.version === version) - 1].version
+        : null;
       const cached = dataCache[version];
+      let rec = cached;
       if (cached) {
         cacheHits++;
         updateStats();
         seekLabel.textContent = ` — v${version} (cached, no API call)`;
         payloadEl.textContent = JSON.stringify(cached.data, null, 2);
         payloadEl.classList.remove('empty');
+      } else {
+        seekLabel.textContent = ` — v${version} (loading…)`;
+        try {
+          rec = await fetchVersion(currentId, version);
+          dataCache[version] = rec;
+          seekLabel.textContent = ` — v${version}`;
+          payloadEl.textContent = JSON.stringify(rec.data, null, 2);
+          payloadEl.classList.remove('empty');
+        } catch (e) {
+          showErr(e.message || 'Failed to load version');
+          return;
+        }
+      }
+      updateDiffPanels(version, prevVersion, rec);
+    }
+
+    async function updateDiffPanels(selectedVer, originalVer, selectedRec) {
+      const selectedStr = JSON.stringify(selectedRec.data, null, 2);
+      if (!originalVer) {
+        renderDiff('', selectedStr, '—', selectedVer);
         return;
       }
-      seekLabel.textContent = ` — v${version} (loading…)`;
-      try {
-        const rec = await fetchVersion(currentId, version);
-        dataCache[version] = rec;
-        seekLabel.textContent = ` — v${version}`;
-        payloadEl.textContent = JSON.stringify(rec.data, null, 2);
-        payloadEl.classList.remove('empty');
-      } catch (e) {
-        showErr(e.message || 'Failed to load version');
+      let originalRec = dataCache[originalVer];
+      if (!originalRec) {
+        try {
+          originalRec = await fetchVersion(currentId, originalVer);
+          dataCache[originalVer] = originalRec;
+        } catch (_) {
+          diffSection.style.display = 'none';
+          return;
+        }
       }
+      renderDiff(JSON.stringify(originalRec.data, null, 2), selectedStr, originalVer, selectedVer);
     }
 
     seekSlider.addEventListener('input', () => {

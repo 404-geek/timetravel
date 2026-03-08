@@ -58,7 +58,7 @@ def create_record(
 
 
 def update_record(db: Session, id: int, updates: dict[str, Any]) -> Record:
-    """Apply updates (None = delete key). Returns full record."""
+    """Apply updates (None = delete key). Returns full record. Merge semantics."""
     record = get_record(db, id)
     data = dict(record.data)
     for key, value in updates.items():
@@ -66,6 +66,15 @@ def update_record(db: Session, id: int, updates: dict[str, Any]) -> Record:
             data.pop(key, None)
         else:
             data[key] = value
+    row = db.query(RecordRow).filter(RecordRow.id == id).first()
+    row.data = json.dumps(data)
+    db.commit()
+    return Record(id=id, data=data)
+
+
+def replace_record(db: Session, id: int, data: dict[str, Any]) -> Record:
+    """Set record to exactly this data (full replace). Keys not in data are removed."""
+    get_record(db, id)  # ensure exists
     row = db.query(RecordRow).filter(RecordRow.id == id).first()
     row.data = json.dumps(data)
     db.commit()
@@ -165,12 +174,14 @@ def create_or_update_versioned(db: Session, id: int, body: dict[str, Any]) -> Re
         else:
             raise
 
+    # Body = full new document (replace). Omitted keys are removed.
+    new_data = dict(body)
     if current is not None:
-        record = update_record(db, id, body)
+        replace_record(db, id, new_data)
+        record = Record(id=id, data=new_data)
     else:
-        data = {k: v for k, v in body.items() if v is not None}
-        create_record(db, id, data)
-        record = Record(id=id, data=data)
+        create_record(db, id, new_data)
+        record = Record(id=id, data=new_data)
 
     row = db.query(RecordRow).filter(RecordRow.id == id).first()
     version = _next_version(db, id)
