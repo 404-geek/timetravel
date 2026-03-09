@@ -297,3 +297,14 @@ def create_or_update_versioned(db: Session, id: int, body: dict[str, Any]) -> Re
     record_row.latest_version = version
     db.commit()
     return Record(id=id, data=new_data)
+
+
+def delete_record(db: Session, id: int) -> None:
+    """Delete a record and all its versions. Raises RecordError if id invalid or record not found."""
+    if id <= 0:
+        raise RecordError("invalid id; id must be a positive number", code="invalid_id")
+    row = db.query(RecordRow).filter(RecordRow.id == id).first()
+    if row is None:
+        raise RecordError(f"record of id {id} does not exist", status_code=404, code="not_found")
+    db.delete(row)
+    db.commit()

@@ -10,6 +10,7 @@ from schemas.record_v2 import RecordWithVersion, VersionInfo
 from services.record import (
     create_or_update_versioned,
     create_or_update_versioned_delta,
+    delete_record,
     get_record,
     get_record_at_time,
     get_record_at_version,
@@ -100,3 +101,10 @@ def post_record_delta(
     """
     record = create_or_update_versioned_delta(db, id, body)
     return Record(id=record.id, data=record.data)
+
+
+@router.delete("/records/{id}")
+def delete_record_route(id: RecordIdPath, db=Depends(get_db)) -> dict:
+    """Delete a record and all its version history."""
+    delete_record(db, id)
+    return {"deleted": id}
