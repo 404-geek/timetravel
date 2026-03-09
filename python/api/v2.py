@@ -94,6 +94,9 @@ def post_record_delta(
     body: dict[str, Any],
     db=Depends(get_db),
 ) -> Record:
-    """Same as POST /records/{id} but stores keyframes + deltas (smaller history)."""
+    """
+    Apply a patch (delta only). Send only changed keys; value null = delete that key.
+    Stores only the patch per version (small, constant-size). First version: body = full document.
+    """
     record = create_or_update_versioned_delta(db, id, body)
     return Record(id=record.id, data=record.data)

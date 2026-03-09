@@ -29,13 +29,17 @@ class VersionInfo:
 
 
 def get_record(db: Session, id: int) -> Record:
-    """Return record. Raises RecordError."""
+    """Return record. Versioned records: current = replay to latest (Google-Docs style). Raises RecordError."""
     if id <= 0:
         raise RecordError("invalid id; id must be a positive number", code="invalid_id")
     row = db.query(RecordRow).filter(RecordRow.id == id).first()
     if row is None:
         raise RecordError(f"record of id {id} does not exist", code="not_found")
-    data = json.loads(row.data)
+    if row.latest_version is not None and row.latest_version >= 1:
+        from services.record_delta import get_record_at_version_replay
+        record, _ = get_record_at_version_replay(db, id, row.latest_version)
+        return record
+    data = json.loads(row.data) if row.data else {}
     return Record(id=row.id, data=data)
 
 
@@ -45,40 +49,16 @@ def create_record(
     data: dict[str, Any],
     customer_id: Optional[int] = None,
 ) -> None:
-    """Insert record. Raises RecordError."""
+    """Insert record. Raises RecordError. latest_version left None until first version row is added."""
     if id <= 0:
         raise RecordError("invalid id; id must be a positive number", code="invalid_id")
-    row = RecordRow(id=id, data=json.dumps(data), customer_id=customer_id)
+    row = RecordRow(id=id, data=json.dumps(data), latest_version=None, customer_id=customer_id)
     try:
         db.add(row)
         db.commit()
     except IntegrityError:
         db.rollback()
         raise RecordError("record already exists", code="already_exists")
-
-
-def update_record(db: Session, id: int, updates: dict[str, Any]) -> Record:
-    """Apply updates (None = delete key). Returns full record. Merge semantics."""
-    record = get_record(db, id)
-    data = dict(record.data)
-    for key, value in updates.items():
-        if value is None:
-            data.pop(key, None)
-        else:
-            data[key] = value
-    row = db.query(RecordRow).filter(RecordRow.id == id).first()
-    row.data = json.dumps(data)
-    db.commit()
-    return Record(id=id, data=data)
-
-
-def replace_record(db: Session, id: int, data: dict[str, Any]) -> Record:
-    """Set record to exactly this data (full replace). Keys not in data are removed."""
-    get_record(db, id)  # ensure exists
-    row = db.query(RecordRow).filter(RecordRow.id == id).first()
-    row.data = json.dumps(data)
-    db.commit()
-    return Record(id=id, data=data)
 
 
 def get_record_at_version(db: Session, id: int, version: int) -> tuple[Record, str]:
@@ -164,33 +144,42 @@ def _next_version(db: Session, record_id: int) -> int:
     return (r or 0) + 1
 
 
-def create_or_update_versioned(db: Session, id: int, body: dict[str, Any]) -> Record:
-    """Create or update record and append a new snapshot to history."""
-    try:
-        current = get_record(db, id)
-    except RecordError as e:
-        if e.code == "not_found":
-            current = None
-        else:
-            raise
-
-    # Body = full new document (replace). Omitted keys are removed.
+def create_or_update_record(db: Session, id: int, body: dict[str, Any]) -> Record:
+    """
+    Create or update record only (no version history). Body = full document (replace).
+    Use for v1: simple create/update full record. One query when record exists.
+    """
     new_data = dict(body)
-    if current is not None:
-        replace_record(db, id, new_data)
-        record = Record(id=id, data=new_data)
+    row = db.query(RecordRow).filter(RecordRow.id == id).first()
+    if row is None:
+        create_record(db, id, new_data)
     else:
+        row.data = json.dumps(new_data)
+        db.commit()
+    return Record(id=id, data=new_data)
+
+
+def create_or_update_versioned(db: Session, id: int, body: dict[str, Any]) -> Record:
+    """Create or update record and append a new snapshot to history. Body = full document. Google-Docs style: only append version, no overwrite of records.data."""
+    new_data = dict(body)
+    row = db.query(RecordRow).filter(RecordRow.id == id).first()
+    if row is None:
         create_record(db, id, new_data)
         record = Record(id=id, data=new_data)
+        customer_id = None
+    else:
+        record = Record(id=id, data=new_data)
+        customer_id = row.customer_id
 
-    row = db.query(RecordRow).filter(RecordRow.id == id).first()
     version = _next_version(db, id)
     rv = RecordVersionRow(
         record_id=id,
         version=version,
         data=json.dumps(record.data),
-        customer_id=row.customer_id if row else None,
+        customer_id=customer_id,
     )
     db.add(rv)
+    record_row = row if row is not None else db.query(RecordRow).filter(RecordRow.id == id).first()
+    record_row.latest_version = version
     db.commit()
     return record

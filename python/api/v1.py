@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse
 
 from db import get_db
 from schemas.record import Record
-from services.record import RecordError, create_or_update_versioned, get_record
+from services.record import RecordError, create_or_update_record, get_record
 
 router = APIRouter(prefix="/api/v1")
 
@@ -41,5 +41,5 @@ def post_records(id: str, body: dict[str, Any], db=Depends(get_db)):
     id_num, err = _parse_id(id)
     if err:
         return err
-    record = create_or_update_versioned(db, id_num, body)
+    record = create_or_update_record(db, id_num, body)
     return Record(id=record.id, data=record.data)

@@ -21,7 +21,8 @@ class Record(Base):
     __tablename__ = "records"
 
     id = Column(Integer, primary_key=True, index=True)
-    data = Column(Text, nullable=False)
+    data = Column(Text, nullable=True)  # Optional: set on create; versioned "current" is derived by replay
+    latest_version = Column(Integer, nullable=True)  # When set, current state = replay to this version (Google-Docs style)
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True)
 
     customer = relationship("Customer", back_populates="records")
