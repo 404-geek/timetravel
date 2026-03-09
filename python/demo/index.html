@@ -83,7 +83,7 @@
   <div class="payload empty" id="payload">No version selected.</div>
 
   <div class="diffSection" id="diffSection" style="display: none;">
-    <h3>Compare with previous (Google Docs style)</h3>
+    <h3>Compare with previous</h3>
     <div class="diffPanels">
       <div class="diffPanelWrap">
         <div class="panelLabel" id="originalLabel">Original (previous)</div>
@@ -130,6 +130,19 @@
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+    }
+
+    function formatObjectForDiff(obj) {
+      if (!obj || typeof obj !== 'object') return '';
+      const keys = Object.keys(obj).sort();
+      const lines = ['{'];
+      for (const key of keys) {
+        const value = obj[key];
+        const json = JSON.stringify(value);
+        lines.push(`  "${key}": ${json}`);
+      }
+      lines.push('}');
+      return lines.join('\n');
     }
 
     function renderDiff(originalStr, selectedStr, originalVer, selectedVer) {
@@ -325,7 +338,7 @@
     }
 
     async function updateDiffPanels(selectedVer, originalVer, selectedRec) {
-      const selectedStr = JSON.stringify(selectedRec.data, null, 2);
+      const selectedStr = formatObjectForDiff(selectedRec.data);
       if (!originalVer) {
         renderDiff('', selectedStr, '—', selectedVer);
         return;
@@ -340,7 +353,8 @@
           return;
         }
       }
-      renderDiff(JSON.stringify(originalRec.data, null, 2), selectedStr, originalVer, selectedVer);
+      const originalStr = formatObjectForDiff(originalRec.data);
+      renderDiff(originalStr, selectedStr, originalVer, selectedVer);
     }
 
     seekSlider.addEventListener('input', () => {

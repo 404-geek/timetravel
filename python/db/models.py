@@ -22,7 +22,7 @@ class Record(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     data = Column(Text, nullable=True)  # Optional: set on create; versioned "current" is derived by replay
-    latest_version = Column(Integer, nullable=True)  # When set, current state = replay to this version (Google-Docs style)
+    latest_version = Column(Integer, nullable=True)  # When set, current state = replay to this version
     customer_id = Column(Integer, ForeignKey("customers.id"), nullable=True)
 
     customer = relationship("Customer", back_populates="records")
@@ -39,7 +39,7 @@ class RecordVersion(Base):
 
     record_id = Column(Integer, ForeignKey("records.id"), primary_key=True)
     version = Column(Integer, primary_key=True)
-    data = Column(Text, nullable=True)  # None when row is delta-only (see record_delta)
+    data = Column(Text, nullable=True)  # None when row is delta-only
     delta = Column(Text, nullable=True)  # JSON: only changed keys; value null = delete key
     is_keyframe = Column(Boolean, default=True, nullable=False)  # True = full snapshot in data
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)

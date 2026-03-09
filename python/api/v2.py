@@ -9,12 +9,12 @@ from schemas.record import Record
 from schemas.record_v2 import RecordWithVersion, VersionInfo
 from services.record import (
     create_or_update_versioned,
+    create_or_update_versioned_delta,
     get_record,
     get_record_at_time,
     get_record_at_version,
     list_versions,
 )
-from services.record_delta import create_or_update_versioned_delta
 
 router = APIRouter(prefix="/api/v2")
 

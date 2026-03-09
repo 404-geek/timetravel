@@ -1,4 +1,4 @@
-"""Add latest_version to records (Google-Docs style: current = replay, no full-doc overwrite).
+"""Add latest_version to records (current = replay, no full-doc overwrite).
 
 Revision ID: add_latest_ver
 Revises: add_delta_kf

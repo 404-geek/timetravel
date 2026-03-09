@@ -1,12 +1,12 @@
 """V1 routes: health and records."""
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from db import get_db
 from schemas.record import Record
-from services.record import RecordError, create_or_update_record, get_record
+from services.record import create_or_update_record, get_record
 
 router = APIRouter(prefix="/api/v1")
 

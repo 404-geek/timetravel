@@ -1,6 +1,7 @@
 """FastAPI app — same API as Go (v1 health + records), SQLite; v2 versioned records."""
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,5 +34,4 @@ async def global_exception_handler(_request: Request, exc: Exception) -> JSONRes
 
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
