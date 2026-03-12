@@ -20,7 +20,8 @@ def get_records(
     id: int = Path(gt=0, description="Record id (positive integer)"),
     db=Depends(get_db),
 ) -> Record:
-    return get_record(db, id)
+    record, _, _ = get_record(db, id)
+    return record
 
 
 @router.post("/records/{id}")

@@ -52,30 +52,31 @@ def create_record(
         raise RecordError("record already exists", code="already_exists")
 
 
-def _next_version(db: Session, record_id: int) -> int:
-    r = (
-        db.query(func.coalesce(func.max(RecordVersionRow.version), 0))
-        .filter(RecordVersionRow.record_id == record_id)
-        .scalar()
-    )
-    return (r or 0) + 1
-
-
-def _apply_delta(state: dict[str, Any], delta: dict[str, Any]) -> None:
-    for key, value in delta.items():
+def _apply_changes(target: dict[str, Any], changes: dict[str, Any]) -> None:
+    for key, value in changes.items():
         if value is None:
-            state.pop(key, None)
+            target.pop(key, None)
             continue
         if isinstance(value, dict) and value.get("__diff") and "patch" in value:
-            base = state.get(key)
+            base = target.get(key)
             base = base if isinstance(base, str) else ("" if base is None else str(base))
             patches = _dmp.patch_fromText(value.get("patch") or "")
             if patches:
                 applied, _ = _dmp.patch_apply(patches, base)
                 if applied is not None:
-                    state[key] = applied
+                    target[key] = applied
             continue
-        state[key] = value
+        target[key] = value
+
+
+def _latest_state_for_row(db: Session, row: RecordRow) -> dict[str, Any]:
+    """Return full latest state for a record row, using keyframe fast path when possible."""
+    if row.latest_version and row.latest_version >= 1:
+        if row.data and (row.latest_version == 1 or row.latest_version % KEYFRAME_INTERVAL == 0):
+            return json.loads(row.data)
+        rec, _ = get_record_at_version_replay(db, row.id, row.latest_version)
+        return rec.data
+    return json.loads(row.data) if row.data else {}
 
 
 def get_record_at_version_replay(db: Session, id: int, version: int) -> tuple[Record, str]:
@@ -113,30 +114,11 @@ def get_record_at_version_replay(db: Session, id: int, version: int) -> tuple[Re
     for r in delta_rows:
         delta_json = getattr(r, "delta", None)
         if delta_json:
-            _apply_delta(state, json.loads(delta_json))
+            _apply_changes(state, json.loads(delta_json))
 
-    last_row = delta_rows[-1] if delta_rows else keyframe_row
+    last_row = delta_rows[-1]
     created_at = last_row.created_at.isoformat() if last_row.created_at else ""
     return Record(id=id, data=state), created_at
-
-
-def _apply_request_to_state(base: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-    out = dict(base)
-    for key, value in body.items():
-        if value is None:
-            out.pop(key, None)
-            continue
-        if isinstance(value, dict) and value.get("__diff") and "patch" in value:
-            b = out.get(key)
-            b = b if isinstance(b, str) else ""
-            patches = _dmp.patch_fromText(value.get("patch") or "")
-            if patches:
-                applied, _ = _dmp.patch_apply(patches, b)
-                if applied is not None:
-                    out[key] = applied
-            continue
-        out[key] = value
-    return out
 
 
 def _build_stored_delta(old_state: dict[str, Any], new_state: dict[str, Any]) -> dict[str, Any]:
@@ -160,31 +142,47 @@ def _build_stored_delta(old_state: dict[str, Any], new_state: dict[str, Any]) ->
 def create_or_update_versioned_delta(db: Session, id: int, body: dict[str, Any]) -> Record:
     """Create or update with versioning (delta path). Body {"__clear": true} clears all keys."""
     clear_all = body.get("__clear") is True
-    body_clean = {k: v for k, v in body.items() if k != "__clear"}
+    body_clean = {} if clear_all else {k: v for k, v in body.items() if k != "__clear"}
     row = db.query(RecordRow).filter(RecordRow.id == id).first()
 
-    if row is None:
-        new_state = {} if clear_all else _apply_request_to_state({}, body_clean)
-        create_record(db, id, new_state)
-        old_state, customer_id = {}, None
+    if clear_all:
+        new_state: dict[str, Any] = {}
+        if row is None:
+            create_record(db, id, new_state)
+            customer_id = None
+            next_ver = 1
+        else:
+            current_state = _latest_state_for_row(db, row)
+            if not current_state:
+                return Record(id=id, data={})
+            customer_id = row.customer_id
+            next_ver = (row.latest_version or 0) + 1
+        stored_delta = None
+        is_keyframe = True
     else:
-        old_state = (
-            get_record_at_version_replay(db, id, row.latest_version)[0].data
-            if row.latest_version and row.latest_version >= 1
-            else (json.loads(row.data) if row.data else {})
-        )
-        new_state = {} if clear_all else _apply_request_to_state(old_state, body_clean)
-        if new_state == old_state:
-            return Record(id=id, data=new_state)
-        customer_id = row.customer_id
+        if row is None:
+            old_state: dict[str, Any] = {}
+            new_state = {}
+            _apply_changes(new_state, body_clean)
+            create_record(db, id, new_state)
+            customer_id = None
+            next_ver = 1
+        else:
+            old_state = _latest_state_for_row(db, row)
+            new_state = dict(old_state)
+            _apply_changes(new_state, body_clean)
+            if new_state == old_state:
+                return Record(id=id, data=new_state)
+            customer_id = row.customer_id
+            next_ver = (row.latest_version or 0) + 1
+        is_keyframe = next_ver == 1 or (next_ver % KEYFRAME_INTERVAL == 0)
+        stored_delta = None if is_keyframe else _build_stored_delta(old_state, new_state)
 
-    next_ver = _next_version(db, id)
-    stored_delta = _build_stored_delta(old_state, new_state)
-    is_keyframe = next_ver == 1 or (next_ver % KEYFRAME_INTERVAL == 0)
+    snapshot = json.dumps(new_state) if is_keyframe else None
     rv = RecordVersionRow(
         record_id=id,
         version=next_ver,
-        data=json.dumps(new_state) if is_keyframe else None,
+        data=snapshot,
         delta=json.dumps(stored_delta) if stored_delta else None,
         is_keyframe=is_keyframe,
         customer_id=customer_id,
@@ -194,24 +192,26 @@ def create_or_update_versioned_delta(db: Session, id: int, body: dict[str, Any])
     record_row.latest_version = next_ver
     record_row.created_at = datetime.now(timezone.utc)
     if is_keyframe:
-        record_row.data = json.dumps(new_state)
+        record_row.data = snapshot
     db.commit()
     return Record(id=id, data=new_state)
 
 
-def get_record(db: Session, id: int) -> Record:
-    """Return record. Raises RecordError."""
+def get_record(db: Session, id: int) -> tuple[Record, Optional[int], str]:
     if id <= 0:
         raise RecordError("invalid id; id must be a positive number", code="invalid_id")
     row = db.query(RecordRow).filter(RecordRow.id == id).first()
     if row is None:
         raise RecordError(f"record of id {id} does not exist", code="not_found")
+    created = row.created_at.isoformat() if getattr(row, "created_at", None) else ""
     if row.latest_version is None or row.latest_version < 1:
-        return Record(id=row.id, data=json.loads(row.data) if row.data else {})
+        data = json.loads(row.data) if row.data else {}
+        return Record(id=row.id, data=data), None, created
     if row.data and (row.latest_version == 1 or row.latest_version % KEYFRAME_INTERVAL == 0):
-        return Record(id=row.id, data=json.loads(row.data))
-    record, _ = get_record_at_version_replay(db, id, row.latest_version)
-    return record
+        data = json.loads(row.data)
+        return Record(id=row.id, data=data), row.latest_version, created
+    record, created = get_record_at_version_replay(db, id, row.latest_version)
+    return record, row.latest_version, created
 
 
 def get_record_at_version(db: Session, id: int, version: int) -> tuple[Record, str]:
@@ -255,6 +255,10 @@ def list_versions(db: Session, id: int) -> list[VersionInfo]:
     """List all versions for a record (version number and created_at)."""
     if id <= 0:
         raise RecordError("invalid id; id must be a positive number", code="invalid_id")
+
+    exists = db.query(RecordRow.id).filter(RecordRow.id == id).first()
+    if exists is None:
+        raise RecordError(f"record of id {id} does not exist", code="not_found")
     rows = (
         db.query(RecordVersionRow.version, RecordVersionRow.created_at)
         .filter(RecordVersionRow.record_id == id)
@@ -285,7 +289,9 @@ def create_or_update_versioned(db: Session, id: int, body: dict[str, Any]) -> Re
     row = db.query(RecordRow).filter(RecordRow.id == id).first()
     if row is None:
         create_record(db, id, new_data)
-    version = _next_version(db, id)
+        version = 1
+    else:
+        version = (row.latest_version or 0) + 1
     rv = RecordVersionRow(
         record_id=id,
         version=version,

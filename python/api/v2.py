@@ -32,7 +32,7 @@ def _parse_at(s: str) -> datetime:
     return datetime.fromisoformat(s)
 
 
-@router.get("/records/{id}", response_model=None)
+@router.get("/records/{id}")
 def get_record_route(
     id: int = Path(gt=0, description="Record id (positive integer)"),
     version: Annotated[
@@ -46,6 +46,11 @@ def get_record_route(
     db=Depends(get_db),
 ) -> Record | RecordWithVersion:
     """Get record by id. Use ?version=N for version number, ?at=... for state at a date/time, or omit for current."""
+    if version is not None:
+        record, created_at = get_record_at_version(db, id, version)
+        return RecordWithVersion(
+            id=record.id, version=version, data=record.data, created_at=created_at
+        )
     if at is not None:
         try:
             dt = _parse_at(at)
@@ -55,24 +60,13 @@ def get_record_route(
         return RecordWithVersion(
             id=record.id, version=ver, data=record.data, created_at=created_at
         )
-    if version is not None:
-        record, created_at = get_record_at_version(db, id, version)
-        return RecordWithVersion(
-            id=record.id, version=version, data=record.data, created_at=created_at
-        )
-    # Latest: use hot-path snapshot from records table, including created_at
-    record = get_record(db, id)
-    row = (
-        db.query(RecordRow.latest_version, RecordRow.created_at)
-        .filter(RecordRow.id == id)
-        .first()
-    )
-    if row and row.latest_version and row.latest_version >= 1 and row.created_at:
+    record, latest_ver, created_at = get_record(db, id)
+    if latest_ver is not None and created_at:
         return RecordWithVersion(
             id=id,
-            version=row.latest_version,
+            version=latest_ver,
             data=record.data,
-            created_at=row.created_at.isoformat(),
+            created_at=created_at,
         )
     return record
 
@@ -83,7 +77,6 @@ def get_record_versions(
     db=Depends(get_db),
 ) -> dict:
     """List all versions of a record (version number and created_at)."""
-    get_record(db, id)
     versions = list_versions(db, id)
     return {
         "id": id,
@@ -109,7 +102,8 @@ def post_record_delta(
 ) -> Record:
     """
     Apply a patch (delta only). Send only changed keys; value null = delete that key.
-    Stores only the patch per version (small, constant-size). First version: body = full document.
+    Use {"__clear": true} to clear all keys. Stores only the patch per version (small, constant-size).
+    First version: body = full document.
     """
     return create_or_update_versioned_delta(db, id, body)
 
