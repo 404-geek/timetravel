@@ -84,7 +84,6 @@ def get_record_at_version_replay(db: Session, id: int, version: int) -> tuple[Re
         db.query(RecordVersionRow)
         .filter(
             RecordVersionRow.record_id == id,
-            RecordVersionRow.version >= 1,
             RecordVersionRow.version <= version,
             RecordVersionRow.is_keyframe.is_(True),
             RecordVersionRow.data.isnot(None),
@@ -193,6 +192,7 @@ def create_or_update_versioned_delta(db: Session, id: int, body: dict[str, Any])
     db.add(rv)
     record_row = row or db.query(RecordRow).filter(RecordRow.id == id).first()
     record_row.latest_version = next_ver
+    record_row.created_at = datetime.now(timezone.utc)
     if is_keyframe:
         record_row.data = json.dumps(new_state)
     db.commit()
@@ -295,6 +295,7 @@ def create_or_update_versioned(db: Session, id: int, body: dict[str, Any]) -> Re
     db.add(rv)
     record_row = row or db.query(RecordRow).filter(RecordRow.id == id).first()
     record_row.latest_version = version
+    record_row.created_at = datetime.now(timezone.utc)
     db.commit()
     return Record(id=id, data=new_data)
 

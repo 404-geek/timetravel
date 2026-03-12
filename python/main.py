@@ -12,7 +12,7 @@ app = FastAPI()
 app.include_router(v1.router)
 app.include_router(v2.router)
 
-# Optional demo UI (remove demo/ folder + these 3 lines to drop it)
+
 _demo_dir = Path(__file__).resolve().parent / "demo"
 if _demo_dir.is_dir():
     app.mount("/demo", StaticFiles(directory=str(_demo_dir), html=True), name="demo")

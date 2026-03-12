@@ -5,6 +5,7 @@ from typing import Annotated, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from db import get_db
+from db.models import Record as RecordRow
 from schemas.record import Record
 from schemas.record_v2 import RecordWithVersion, VersionInfo
 from services.record import (
@@ -18,8 +19,6 @@ from services.record import (
 )
 
 router = APIRouter(prefix="/api/v2")
-
-RecordIdPath = Annotated[int, Path(gt=0, description="Record id (positive integer)")]
 
 
 @router.post("/health")
@@ -35,7 +34,7 @@ def _parse_at(s: str) -> datetime:
 
 @router.get("/records/{id}", response_model=None)
 def get_record_route(
-    id: RecordIdPath,
+    id: int = Path(gt=0, description="Record id (positive integer)"),
     version: Annotated[
         Optional[int],
         Query(ge=1, description="Version number for time-travel; omit for latest"),
@@ -61,12 +60,26 @@ def get_record_route(
         return RecordWithVersion(
             id=record.id, version=version, data=record.data, created_at=created_at
         )
-    return get_record(db, id)
+    # Latest: use hot-path snapshot from records table, including created_at
+    record = get_record(db, id)
+    row = (
+        db.query(RecordRow.latest_version, RecordRow.created_at)
+        .filter(RecordRow.id == id)
+        .first()
+    )
+    if row and row.latest_version and row.latest_version >= 1 and row.created_at:
+        return RecordWithVersion(
+            id=id,
+            version=row.latest_version,
+            data=record.data,
+            created_at=row.created_at.isoformat(),
+        )
+    return record
 
 
 @router.get("/records/{id}/versions")
 def get_record_versions(
-    id: RecordIdPath,
+    id: int = Path(gt=0, description="Record id (positive integer)"),
     db=Depends(get_db),
 ) -> dict:
     """List all versions of a record (version number and created_at)."""
@@ -80,31 +93,32 @@ def get_record_versions(
 
 @router.post("/records/{id}")
 def post_record(
-    id: RecordIdPath,
     body: dict[str, Any],
+    id: int = Path(gt=0, description="Record id (positive integer)"),
     db=Depends(get_db),
 ) -> Record:
     """Create or update record. New state is stored as latest version; history preserved."""
-    record = create_or_update_versioned(db, id, body)
-    return Record(id=record.id, data=record.data)
+    return create_or_update_versioned(db, id, body)
 
 
 @router.post("/records/{id}/delta")
 def post_record_delta(
-    id: RecordIdPath,
     body: dict[str, Any],
+    id: int = Path(gt=0, description="Record id (positive integer)"),
     db=Depends(get_db),
 ) -> Record:
     """
     Apply a patch (delta only). Send only changed keys; value null = delete that key.
     Stores only the patch per version (small, constant-size). First version: body = full document.
     """
-    record = create_or_update_versioned_delta(db, id, body)
-    return Record(id=record.id, data=record.data)
+    return create_or_update_versioned_delta(db, id, body)
 
 
 @router.delete("/records/{id}")
-def delete_record_route(id: RecordIdPath, db=Depends(get_db)) -> dict:
+def delete_record_route(
+    id: int = Path(gt=0, description="Record id (positive integer)"),
+    db=Depends(get_db),
+) -> dict:
     """Delete a record and all its version history."""
     delete_record(db, id)
     return {"deleted": id}

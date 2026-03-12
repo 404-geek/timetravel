@@ -20,9 +20,9 @@
     .seekWrap.visible { display: block; }
     .seekWrap label { display: block; font-size: 0.85rem; color: #999; margin-bottom: 6px; }
     .seekTrack { position: relative; padding: 4px 0; }
-    .seekMarkers { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 12px; pointer-events: none; z-index: 0; }
-    .seekMarkers .marker { position: absolute; width: 2px; height: 10px; background: #555; border-radius: 1px; top: 50%; transform: translate(-50%, -50%); }
-    .seekMarkers .marker.keyframe { background: #0a7ea4; height: 14px; }
+    .seekMarkers { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 20px; pointer-events: none; z-index: 0; }
+    .seekMarkers .marker { position: absolute; width: 4px; height: 14px; background: #888; border-radius: 2px; top: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 1px rgba(0,0,0,0.2); }
+    .seekMarkers .marker.keyframe { background: #0a7ea4; height: 18px; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
     input[type="range"] { position: relative; z-index: 1; width: 100%; height: 8px; accent-color: #0a7ea4; display: block; }
     .seekMeta { font-size: 0.8rem; color: #888; margin-top: 4px; }
     .stats { font-size: 0.8rem; color: #6a9; margin-bottom: 12px; }
@@ -124,6 +124,16 @@
     const selectedLabel = document.getElementById('selectedLabel');
     const originalPanel = document.getElementById('originalPanel');
     const selectedPanel = document.getElementById('selectedPanel');
+
+    function utcToLocal(isoStr) {
+      if (!isoStr) return '';
+      let s = String(isoStr).trim();
+      if (!/Z|[+-]\d{2}:?\d{2}$/.test(s)) {
+        s = s.replace(/\.\d+$/, '').replace(' ', 'T') + 'Z';
+      }
+      const d = new Date(s);
+      return isNaN(d.getTime()) ? isoStr : d.toLocaleString();
+    }
 
     function escapeHtml(s) {
       return String(s)
@@ -230,7 +240,7 @@
         const m = document.createElement('span');
         m.className = 'marker' + (v.is_keyframe ? ' keyframe' : '');
         m.style.left = left + '%';
-        m.title = `v${v.version}${v.created_at ? ' — ' + v.created_at : ''}`;
+        m.title = `v${v.version}${v.created_at ? ' — ' + utcToLocal(v.created_at) : ''}`;
         seekMarkersEl.appendChild(m);
       });
     }
@@ -246,14 +256,14 @@
         const selected = selectedVersion === v.version ? ' selected' : '';
         return `<div class="vrow${selected}" data-version="${v.version}" data-created="${v.created_at}">
           <span class="ver">v${v.version}</span>
-          <span class="at">${v.created_at}</span>
+          <span class="at">${utcToLocal(v.created_at)}</span>
         </div>`;
       }).join('');
       timelineEl.querySelectorAll('.vrow').forEach(el => {
         el.addEventListener('click', () => {
           const ver = parseInt(el.dataset.version, 10);
           const idx = timeline.findIndex(v => v.version === ver);
-          if (idx >= 0) { seekSlider.value = idx; seekMeta.textContent = `v${ver} — ${timeline[idx].created_at}`; }
+          if (idx >= 0) { seekSlider.value = idx; seekMeta.textContent = `v${ver} — ${utcToLocal(timeline[idx].created_at)}`; }
           seekTo(ver);
         });
       });
@@ -283,7 +293,7 @@
         seekSlider.max = Math.max(0, timeline.length - 1);
         seekSlider.value = 0;
         if (timeline.length > 0) {
-          seekMeta.textContent = `v${timeline[0].version} — ${timeline[0].created_at}`;
+          seekMeta.textContent = `v${timeline[0].version} — ${utcToLocal(timeline[0].created_at)}`;
         }
         renderSeekMarkers();
         renderTimeline();
@@ -362,7 +372,7 @@
       const idx = parseInt(seekSlider.value, 10);
       const v = timeline[idx];
       if (v) {
-        seekMeta.textContent = `v${v.version} — ${v.created_at}`;
+        seekMeta.textContent = `v${v.version} — ${utcToLocal(v.created_at)}`;
         seekTo(v.version);
       }
     });
