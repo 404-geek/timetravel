@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"database/sql"
+	"encoding/json"
 
 	"github.com/rainbowmga/timetravel/entity"
 )
@@ -32,6 +34,74 @@ type RecordService interface {
 // InMemoryRecordService is an in-memory implementation of RecordService.
 type InMemoryRecordService struct {
 	data map[int]entity.Record
+}
+
+type SQLiteRecordService struct {
+	db *sql.DB
+}
+
+func NewSQLiteRecordService(db *sql.DB) SQLiteRecordService {
+	return SQLiteRecordService{
+		db: db,
+	}
+}
+
+func (s *SQLiteRecordService) GetRecord(ctx context.Context, id int) (entity.Record, error) {
+	if id <= 0 {
+		return entity.Record{}, ErrRecordIDInvalid
+	}
+	var dataJSON string
+	err := s.db.QueryRowContext(ctx, `SELECT data FROM records WHERE id = ?`, id).Scan(&dataJSON)
+	if err == sql.ErrNoRows {
+		return entity.Record{}, ErrRecordDoesNotExist
+	}
+	if err != nil {
+		return entity.Record{}, err
+	}
+	var data map[string]string
+	if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
+		return entity.Record{}, err
+	}
+	return entity.Record{ID: id, Data: data}, nil
+}
+
+
+func (s *SQLiteRecordService) CreateRecord(ctx context.Context, record entity.Record) error {
+	if record.ID <= 0 {
+		return ErrRecordIDInvalid
+	}
+	dataJSON, err := json.Marshal(record.Data)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO records (id, data) VALUES (?, ?)`, record.ID, string(dataJSON))
+	if err != nil {
+		return ErrRecordAlreadyExists
+	}
+	return nil
+}
+
+func (s *SQLiteRecordService) UpdateRecord(ctx context.Context, id int, updates map[string]*string) (entity.Record, error) {
+	record, err := s.GetRecord(ctx, id)
+	if err != nil {
+		return entity.Record{}, err
+	}
+	for key, value := range updates {
+		if value == nil {
+			delete(record.Data, key)
+		} else {
+			record.Data[key] = *value
+		}
+	}
+	dataJSON, err := json.Marshal(record.Data)
+	if err != nil {
+		return entity.Record{}, err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE records SET data = ? WHERE id = ?`, string(dataJSON), id)
+	if err != nil {
+		return entity.Record{}, err
+	}
+	return record, nil
 }
 
 func NewInMemoryRecordService() InMemoryRecordService {

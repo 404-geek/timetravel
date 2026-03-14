@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Record timeline — time-travel seek demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; background: #1a1a1a; color: #e0e0e0; }
+    h1 { font-size: 1.25rem; margin-bottom: 8px; color: #fff; }
+    .sub { font-size: 0.85rem; color: #888; margin-bottom: 8px; }
+    .optim { font-size: 0.8rem; color: #6a9; background: #1e2a1e; padding: 10px 12px; border-radius: 8px; margin-bottom: 16px; }
+    .optim strong { color: #8bc; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    input[type="number"] { width: 80px; padding: 8px 12px; border: 1px solid #444; border-radius: 6px; background: #2a2a2a; color: #fff; }
+    button { padding: 8px 16px; border: none; border-radius: 6px; background: #0a7ea4; color: #fff; cursor: pointer; font-weight: 600; }
+    button:hover { background: #0990c0; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .seekWrap { margin-bottom: 16px; display: none; }
+    .seekWrap.visible { display: block; }
+    .seekWrap label { display: block; font-size: 0.85rem; color: #999; margin-bottom: 6px; }
+    .seekTrack { position: relative; padding: 4px 0; }
+    .seekMarkers { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); height: 20px; pointer-events: none; z-index: 0; }
+    .seekMarkers .marker { position: absolute; width: 4px; height: 14px; background: #888; border-radius: 2px; top: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 1px rgba(0,0,0,0.2); }
+    .seekMarkers .marker.keyframe { background: #0a7ea4; height: 18px; box-shadow: 0 0 0 1px rgba(0,0,0,0.15); }
+    input[type="range"] { position: relative; z-index: 1; width: 100%; height: 8px; accent-color: #0a7ea4; display: block; }
+    .seekMeta { font-size: 0.8rem; color: #888; margin-top: 4px; }
+    .stats { font-size: 0.8rem; color: #6a9; margin-bottom: 12px; }
+    .stats span { margin-right: 16px; }
+    .timeline { background: #252525; border-radius: 8px; padding: 12px; margin-bottom: 16px; max-height: 200px; overflow-y: auto; }
+    .timeline.empty { color: #666; font-style: italic; }
+    .vrow { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; }
+    .vrow:hover { background: #333; }
+    .vrow.selected { background: #0a7ea4; color: #fff; }
+    .vrow .ver { font-weight: 600; min-width: 48px; }
+    .vrow .at { font-size: 0.8rem; color: #999; }
+    .vrow.selected .at { color: #ccc; }
+    .payload { background: #252525; border-radius: 8px; padding: 12px; margin-top: 12px; white-space: pre-wrap; word-break: break-all; font-size: 0.9rem; font-family: ui-monospace, monospace; }
+    .payload.empty { color: #666; font-style: italic; }
+    .diffSection { margin-top: 16px; }
+    .diffSection h3 { font-size: 0.95rem; margin-bottom: 8px; color: #ccc; }
+    .diffPanels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 600px) { .diffPanels { grid-template-columns: 1fr; } }
+    .diffPanel { background: #252525; border-radius: 8px; padding: 12px; white-space: pre-wrap; word-break: break-all; font-size: 0.85rem; font-family: ui-monospace, monospace; min-height: 120px; max-height: 320px; overflow: auto; }
+    .diffPanel .deleted { text-decoration: line-through; color: #c66; background: rgba(200,80,80,0.12); }
+    .diffPanel .added { color: #2d8; background: rgba(45,180,80,0.15); }
+    .panelLabel { font-size: 0.75rem; color: #888; margin-bottom: 6px; }
+    .diffPanel .empty { color: #666; font-style: italic; }
+    .error { color: #f44336; font-size: 0.9rem; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Record timeline</h1>
+  <p class="sub">Slider or list: seek to any version. First time = 1 API call for that version; after that = from cache (0 calls).</p>
+  <div class="optim">
+    <strong>Optimization:</strong> (1) <strong>One</strong> timeline call (metadata only, small). (2) Version data = <strong>one call per version only the first time</strong> you seek there; then cached. (3) Prefetch all = load every version once, then <strong>all seeks are 0 calls</strong> (instant).
+  </div>
+
+  <div class="row">
+    <label for="rid">Record ID</label>
+    <input type="number" id="rid" min="1" value="1" placeholder="1">
+    <button id="btnLoad">Load timeline</button>
+    <button id="btnPrefetch" disabled>Prefetch all</button>
+  </div>
+  <div class="stats" id="stats">API calls: 0 · Cache hits: 0</div>
+
+  <div class="seekWrap" id="seekWrap">
+    <label for="seek">Seek by version</label>
+    <div class="seekTrack">
+      <div class="seekMarkers" id="seekMarkers" aria-hidden="true"></div>
+      <input type="range" id="seek" min="0" max="0" value="0" step="1">
+    </div>
+    <div class="seekMeta" id="seekMeta">v1 — —</div>
+  </div>
+
+  <div class="timeline empty" id="timeline">Enter record ID and click Load timeline.</div>
+  <p id="err" class="error" style="display:none;"></p>
+
+  <div style="margin-top: 12px;">
+    <strong>Version at seek</strong>
+    <span id="seekLabel" style="color:#888; font-size:0.9rem;"> — select a version above or use slider</span>
+  </div>
+  <div class="payload empty" id="payload">No version selected.</div>
+
+  <div class="diffSection" id="diffSection" style="display: none;">
+    <h3>Compare with previous</h3>
+    <div class="diffPanels">
+      <div class="diffPanelWrap">
+        <div class="panelLabel" id="originalLabel">Original (previous)</div>
+        <div class="diffPanel" id="originalPanel"></div>
+      </div>
+      <div class="diffPanelWrap">
+        <div class="panelLabel" id="selectedLabel">Selected version</div>
+        <div class="diffPanel" id="selectedPanel"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/diff/5.2.0/diff.min.js"></script>
+  <script>
+    const API = '';
+
+    let timeline = [];
+    let dataCache = {};
+    let currentId = null;
+    let selectedVersion = null;
+    let apiCalls = 0;
+    let cacheHits = 0;
+
+    const ridEl = document.getElementById('rid');
+    const btnLoad = document.getElementById('btnLoad');
+    const btnPrefetch = document.getElementById('btnPrefetch');
+    const timelineEl = document.getElementById('timeline');
+    const errEl = document.getElementById('err');
+    const seekLabel = document.getElementById('seekLabel');
+    const payloadEl = document.getElementById('payload');
+    const statsEl = document.getElementById('stats');
+    const seekWrap = document.getElementById('seekWrap');
+    const seekSlider = document.getElementById('seek');
+    const seekMeta = document.getElementById('seekMeta');
+    const seekMarkersEl = document.getElementById('seekMarkers');
+    const diffSection = document.getElementById('diffSection');
+    const originalLabel = document.getElementById('originalLabel');
+    const selectedLabel = document.getElementById('selectedLabel');
+    const originalPanel = document.getElementById('originalPanel');
+    const selectedPanel = document.getElementById('selectedPanel');
+
+    function utcToLocal(isoStr) {
+      if (!isoStr) return '';
+      let s = String(isoStr).trim();
+      if (!/Z|[+-]\d{2}:?\d{2}$/.test(s)) {
+        s = s.replace(/\.\d+$/, '').replace(' ', 'T') + 'Z';
+      }
+      const d = new Date(s);
+      return isNaN(d.getTime()) ? isoStr : d.toLocaleString();
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function formatObjectForDiff(obj) {
+      if (!obj || typeof obj !== 'object') return '';
+      const keys = Object.keys(obj).sort();
+      const lines = ['{'];
+      for (const key of keys) {
+        const value = obj[key];
+        const json = JSON.stringify(value);
+        lines.push(`  "${key}": ${json}`);
+      }
+      lines.push('}');
+      return lines.join('\n');
+    }
+
+    function renderDiff(originalStr, selectedStr, originalVer, selectedVer) {
+      const changes = window.Diff && typeof Diff.diffLines === 'function'
+        ? Diff.diffLines(originalStr, selectedStr)
+        : simpleLineDiff(originalStr, selectedStr);
+      let leftHtml = '';
+      let rightHtml = '';
+      for (const part of changes) {
+        const escaped = escapeHtml(part.value);
+        const withNewlines = escaped.replace(/\n/g, '<br>\n');
+        if (part.removed) {
+          leftHtml += '<span class="deleted">' + withNewlines + '</span>';
+        } else if (part.added) {
+          rightHtml += '<span class="added">' + withNewlines + '</span>';
+        } else {
+          leftHtml += withNewlines;
+          rightHtml += withNewlines;
+        }
+      }
+      originalLabel.textContent = 'Original (v' + originalVer + ')';
+      selectedLabel.textContent = 'Selected (v' + selectedVer + ') — green = added';
+      originalPanel.innerHTML = leftHtml || '<span class="empty">(no previous version)</span>';
+      selectedPanel.innerHTML = rightHtml;
+      diffSection.style.display = 'block';
+    }
+
+    function simpleLineDiff(oldStr, newStr) {
+      const oldLines = (oldStr || '').split('\n');
+      const newLines = (newStr || '').split('\n');
+      const result = [];
+      let i = 0, j = 0;
+      while (i < oldLines.length && j < newLines.length) {
+        if (oldLines[i] === newLines[j]) {
+          result.push({ value: oldLines[i] + '\n', added: false, removed: false });
+          i++;
+          j++;
+        } else {
+          const nextInNew = newLines.indexOf(oldLines[i], j);
+          const nextInOld = oldLines.indexOf(newLines[j], i);
+          if (nextInNew !== -1 && (nextInOld === -1 || nextInNew - j <= nextInOld - i)) {
+            while (j < nextInNew) {
+              result.push({ value: newLines[j] + '\n', added: true, removed: false });
+              j++;
+            }
+          } else if (nextInOld !== -1) {
+            while (i < nextInOld) {
+              result.push({ value: oldLines[i] + '\n', added: false, removed: true });
+              i++;
+            }
+          } else {
+            result.push({ value: oldLines[i] + '\n', added: false, removed: true });
+            result.push({ value: newLines[j] + '\n', added: true, removed: false });
+            i++;
+            j++;
+          }
+        }
+      }
+      while (i < oldLines.length) {
+        result.push({ value: oldLines[i] + (i === oldLines.length - 1 ? '' : '\n'), added: false, removed: true });
+        i++;
+      }
+      while (j < newLines.length) {
+        result.push({ value: newLines[j] + (j === newLines.length - 1 ? '' : '\n'), added: true, removed: false });
+        j++;
+      }
+      return result;
+    }
+
+    function showErr(msg) {
+      errEl.textContent = msg || '';
+      errEl.style.display = msg ? 'block' : 'none';
+    }
+
+    function updateStats() {
+      statsEl.textContent = `API calls: ${apiCalls} · Cache hits: ${cacheHits}`;
+    }
+
+    function renderSeekMarkers() {
+      seekMarkersEl.innerHTML = '';
+      if (timeline.length === 0) return;
+      const n = timeline.length;
+      timeline.forEach((v, i) => {
+        const left = n === 1 ? 50 : (i / (n - 1)) * 100;
+        const m = document.createElement('span');
+        m.className = 'marker' + (v.is_keyframe ? ' keyframe' : '');
+        m.style.left = left + '%';
+        m.title = `v${v.version}${v.created_at ? ' — ' + utcToLocal(v.created_at) : ''}`;
+        seekMarkersEl.appendChild(m);
+      });
+    }
+
+    function renderTimeline() {
+      if (timeline.length === 0) {
+        timelineEl.innerHTML = 'No versions. Load timeline first.';
+        timelineEl.classList.add('empty');
+        return;
+      }
+      timelineEl.classList.remove('empty');
+      timelineEl.innerHTML = timeline.map(v => {
+        const selected = selectedVersion === v.version ? ' selected' : '';
+        return `<div class="vrow${selected}" data-version="${v.version}" data-created="${v.created_at}">
+          <span class="ver">v${v.version}</span>
+          <span class="at">${utcToLocal(v.created_at)}</span>
+        </div>`;
+      }).join('');
+      timelineEl.querySelectorAll('.vrow').forEach(el => {
+        el.addEventListener('click', () => {
+          const ver = parseInt(el.dataset.version, 10);
+          const idx = timeline.findIndex(v => v.version === ver);
+          if (idx >= 0) { seekSlider.value = idx; seekMeta.textContent = `v${ver} — ${utcToLocal(timeline[idx].created_at)}`; }
+          seekTo(ver);
+        });
+      });
+    }
+
+    async function loadTimeline() {
+      const id = parseInt(ridEl.value, 10);
+      if (!id || id < 1) { showErr('Record ID must be ≥ 1'); return; }
+      showErr('');
+      btnLoad.disabled = true;
+      try {
+        apiCalls++;
+        updateStats();
+        const r = await fetch(`${API}/api/v2/records/${id}/versions`);
+        if (!r.ok) throw new Error((await r.json()).error || r.statusText);
+        const j = await r.json();
+        currentId = id;
+        timeline = j.versions || [];
+        dataCache = {};
+        selectedVersion = null;
+        diffSection.style.display = 'none';
+        seekLabel.textContent = ' — select a version above or use slider';
+        payloadEl.textContent = 'No version selected.';
+        payloadEl.classList.add('empty');
+        seekWrap.classList.toggle('visible', timeline.length > 0);
+        seekSlider.min = 0;
+        seekSlider.max = Math.max(0, timeline.length - 1);
+        seekSlider.value = 0;
+        if (timeline.length > 0) {
+          seekMeta.textContent = `v${timeline[0].version} — ${utcToLocal(timeline[0].created_at)}`;
+        }
+        renderSeekMarkers();
+        renderTimeline();
+        btnPrefetch.disabled = timeline.length === 0;
+      } catch (e) {
+        showErr(e.message || 'Failed to load timeline');
+        timeline = [];
+        seekWrap.classList.remove('visible');
+        renderTimeline();
+      } finally {
+        btnLoad.disabled = false;
+      }
+    }
+
+    async function fetchVersion(id, version) {
+      apiCalls++;
+      updateStats();
+      const r = await fetch(`${API}/api/v2/records/${id}?version=${version}`);
+      if (!r.ok) throw new Error((await r.json()).detail?.toString() || r.statusText);
+      return r.json();
+    }
+
+    async function seekTo(version) {
+      if (!currentId || !timeline.length) return;
+      selectedVersion = version;
+      renderTimeline();
+      const prevVersion = timeline.findIndex(v => v.version === version) > 0
+        ? timeline[timeline.findIndex(v => v.version === version) - 1].version
+        : null;
+      const cached = dataCache[version];
+      let rec = cached;
+      if (cached) {
+        cacheHits++;
+        updateStats();
+        seekLabel.textContent = ` — v${version} (cached, no API call)`;
+        payloadEl.textContent = JSON.stringify(cached.data, null, 2);
+        payloadEl.classList.remove('empty');
+      } else {
+        seekLabel.textContent = ` — v${version} (loading…)`;
+        try {
+          rec = await fetchVersion(currentId, version);
+          dataCache[version] = rec;
+          seekLabel.textContent = ` — v${version}`;
+          payloadEl.textContent = JSON.stringify(rec.data, null, 2);
+          payloadEl.classList.remove('empty');
+        } catch (e) {
+          showErr(e.message || 'Failed to load version');
+          return;
+        }
+      }
+      updateDiffPanels(version, prevVersion, rec);
+    }
+
+    async function updateDiffPanels(selectedVer, originalVer, selectedRec) {
+      const selectedStr = formatObjectForDiff(selectedRec.data);
+      if (!originalVer) {
+        renderDiff('', selectedStr, '—', selectedVer);
+        return;
+      }
+      let originalRec = dataCache[originalVer];
+      if (!originalRec) {
+        try {
+          originalRec = await fetchVersion(currentId, originalVer);
+          dataCache[originalVer] = originalRec;
+        } catch (_) {
+          diffSection.style.display = 'none';
+          return;
+        }
+      }
+      const originalStr = formatObjectForDiff(originalRec.data);
+      renderDiff(originalStr, selectedStr, originalVer, selectedVer);
+    }
+
+    seekSlider.addEventListener('input', () => {
+      if (timeline.length === 0) return;
+      const idx = parseInt(seekSlider.value, 10);
+      const v = timeline[idx];
+      if (v) {
+        seekMeta.textContent = `v${v.version} — ${utcToLocal(v.created_at)}`;
+        seekTo(v.version);
+      }
+    });
+
+    async function prefetchAll() {
+      if (!currentId || !timeline.length) return;
+      btnPrefetch.disabled = true;
+      for (const v of timeline) {
+        if (dataCache[v.version]) continue;
+        try {
+          const rec = await fetchVersion(currentId, v.version);
+          dataCache[v.version] = rec;
+        } catch (_) { /* skip */ }
+      }
+      if (selectedVersion != null && dataCache[selectedVersion]) {
+        payloadEl.textContent = JSON.stringify(dataCache[selectedVersion].data, null, 2);
+        seekLabel.textContent = ` — v${selectedVersion} (cached)`;
+      }
+      btnPrefetch.disabled = false;
+      renderTimeline();
+    }
+
+    btnLoad.addEventListener('click', loadTimeline);
+    btnPrefetch.addEventListener('click', prefetchAll);
+  </script>
+</body>
+</html>

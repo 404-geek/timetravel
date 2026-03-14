@@ -1,0 +1,11 @@
+# SQLite database (local data)
+db/data/*.db
+python/db/*.db
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+python/docs/
+python/tests/
